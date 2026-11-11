@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g fill="none" stroke="#bebebe" stroke-width="1.7" stroke-linecap="round" opacity="0.55">
+    <circle cx="8.2" cy="7.4" r="3.2"/>
+    <path d="M3.4 17.6 Q8.2 12.0 13.0 17.6"/>
+  </g>
+  <path d="M15.5 16.5 L22.5 23.5 M22.5 16.5 L15.5 23.5"
+        fill="none" stroke="#bebebe" stroke-width="1.9" stroke-linecap="round"/>
+</svg>

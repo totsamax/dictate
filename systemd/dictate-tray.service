@@ -1,0 +1,13 @@
+[Unit]
+Description=Значок диктовки в трее
+After=graphical-session.target dictate.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/dictate/tray.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

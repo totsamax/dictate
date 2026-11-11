@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Клиент: говорит службе диктовки переключить запись.
+
+Его и запускает Solaar по нажатию клавиши. Работы здесь нет никакой —
+вся тяжесть в службе, поэтому реакция на клавишу мгновенная.
+"""
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "dictate" / "daemon.sock"
+cmd = sys.argv[1] if len(sys.argv) > 1 else "toggle"
+
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2)
+    s.connect(str(SOCKET_PATH))
+    s.sendall(cmd.encode())
+    s.close()
+except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError) as exc:
+    subprocess.run(
+        ["notify-send", "-a", "Диктовка", "-u", "critical", "Диктовка",
+         f"Служба не отвечает ({exc.__class__.__name__}).\n"
+         f"Проверьте: systemctl --user status dictate"],
+        check=False,
+    )
+    sys.exit(1)

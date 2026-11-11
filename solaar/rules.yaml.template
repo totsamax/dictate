@@ -1,0 +1,8 @@
+%YAML 1.3
+---
+- Key: [Dictation, pressed]
+- Execute: [$HOME/.local/bin/dictate, start]
+---
+- Key: [Dictation, released]
+- Execute: [$HOME/.local/bin/dictate, stop]
+...
