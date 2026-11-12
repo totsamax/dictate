@@ -5,4 +5,7 @@
 ---
 - Key: [Dictation, released]
 - Execute: [$HOME/.local/bin/dictate, stop]
+---
+- Key: [Mute Microphone, pressed]
+- KeyPress: [XF86_AudioMicMute, click]
 ...

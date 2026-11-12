@@ -1,8 +1,12 @@
-# Голосовой ввод по клавише Dictation (F5 на MX Keys for Business)
+# Спецклавиши MX Keys for Business под Linux
 
-Нажал и держишь — говоришь. Отпустил — текст вставился туда, где курсор.
+Две клавиши, которые без Solaar не отправляют в систему ничего:
 
-## Как устроено
+- **F5, Dictation** — голосовой ввод. Нажал и держишь — говоришь.
+  Отпустил — текст вставился туда, где курсор. Ей посвящён почти весь документ.
+- **F7, Mute Microphone** — выключение микрофона. Одно правило, [в конце](#клавиша-mute-microphone-f7).
+
+## Как устроена диктовка
 
 ```
 клавиша F5 → Solaar (перехват HID++) → ~/.local/bin/dictate → служба → Whisper → буфер → Ctrl+V
@@ -14,7 +18,7 @@
 | `~/.local/share/dictate/run-daemon.sh` | обёртка: подкладывает CUDA-библиотеки из venv |
 | `~/.local/bin/dictate` | клиент, его запускает Solaar: `start`, `stop`, `toggle` |
 | `~/.config/systemd/user/dictate.service` | автозапуск при входе в систему |
-| `~/.config/solaar/rules.yaml` | правила Solaar: нажатие → start, отпускание → stop |
+| `~/.config/solaar/rules.yaml` | правила Solaar: нажатие → start, отпускание → stop, плюс правило для F7 |
 | `~/.local/share/dictate/venv` | окружение с faster-whisper (2,6 ГБ) |
 | `~/.local/share/dictate/tray.py` | значок в трее: состояние и выбор микрофона |
 | `~/.local/share/icons/hicolor/scalable/status/dictate-*.svg` | четыре состояния значка |
@@ -24,8 +28,14 @@
 | `~/.config/dictate/preroll` | `1` включает предзапись; по умолчанию выключена |
 | `~/.local/share/dictate/sounds/*.wav` | три сигнала: старт, готово, ошибка |
 
-Перехват клавиши включён в `~/.config/solaar/config.yaml`: у MX Keys в `divert-keys`
-ключ `259` (это Dictation) стоит в `1`. Если сбросится в `0` — клавиша снова станет обычной.
+Перехват клавиш включён в `~/.config/solaar/config.yaml`: у MX Keys в `divert-keys`
+ключи `259` (Dictation) и `284` (Mute Microphone) стоят в `1`. Если сбросятся в `0` —
+клавиши снова станут обычными, то есть молчащими.
+
+Включать перехват удобнее из окна Solaar. Через командную строку на русской локали
+не выйдет: значения выбора локализованы («Перенаправлено»), а Solaar 1.1.19 падает
+на не-ASCII аргументе — `TypeError: Unable to marshal str as an array`. Либо правьте
+`config.yaml` руками при остановленном Solaar, либо пользуйтесь окном.
 
 ## Два режима
 
@@ -204,8 +214,12 @@ journalctl --user -u dictate -f
 ```bash
 dictate start; sleep 3; dictate stop   # в обход клавиши
 pgrep -af 'solaar --window=hide'       # жив ли Solaar
-grep divert-keys ~/.config/solaar/config.yaml | head -1   # ищите "259: 1"
+grep divert-keys ~/.config/solaar/config.yaml | head -1   # ищите "259: 1" и "284: 1"
+wpctl get-volume @DEFAULT_AUDIO_SOURCE@                   # состояние микрофона
 ```
+
+Правила и перехват Solaar читает при запуске, так что после правки
+`rules.yaml` или `config.yaml` его надо перезапустить.
 
 ## Две грабли, на которые уже наступили
 
@@ -217,3 +231,41 @@ grep divert-keys ~/.config/solaar/config.yaml | head -1   # ищите "259: 1"
 **Текст вставляется через буфер, а не печатается.** uinput шлёт коды клавиш,
 а не символы: кириллица зависела бы от текущей раскладки и на английской
 превращалась бы в кашу.
+
+## Клавиша Mute Microphone (F7)
+
+К диктовке отношения не имеет и ничего из неё не требует: ни службы, ни модели.
+
+```yaml
+- Key: [Mute Microphone, pressed]
+- KeyPress: [XF86_AudioMicMute, click]
+```
+
+Solaar через свой uinput нажимает `XF86AudioMicMute`, а микрофон глушит
+gnome-settings-daemon — со своей плашкой на экране и значком в панели.
+
+Три вещи, которые стоит знать, если будете это разбирать:
+
+**Почему не `Execute` с `wpctl set-mute`.** Так тоже работает, но тогда плашку
+и значок пришлось бы изображать самим, а состояние — держать в синхроне
+с системой. Чужая работа, которую GNOME и так делает.
+
+**Почему `KeyPress` вообще срабатывает под Wayland.** Solaar переводит имя
+клавиши в keycode через раскладку. `XF86_AudioMicMute` разрешается
+в X-keycode 198, то есть evdev `KEY_F20` (190), а в раскладке
+`pc+us+inet(evdev)` `<FK20>` и есть `XF86AudioMicMute`. Solaar при старте
+пишет «rules cannot access modifier keys in Wayland» — это про модификаторы,
+простому нажатию не мешает. А вот если бы раскладка была недоступна совсем,
+`KeyPress` молча ничего не делал бы: в коде стоит `if gkeymap`.
+
+**Почему это работает при пустой настройке.** В
+`org.gnome.settings-daemon.plugins.media-keys` ключ `mic-mute` по умолчанию
+`['']`, то есть не назначен. gnome-settings-daemon всё равно реагирует:
+для него это аппаратная клавиша, мимо пользовательских привязок.
+
+Проверить, не трогая клавиатуру:
+
+```bash
+wpctl get-volume @DEFAULT_AUDIO_SOURCE@   # до
+wpctl set-mute  @DEFAULT_AUDIO_SOURCE@ 0  # вернуть как было
+```

@@ -49,8 +49,10 @@ else
   sed "s#\$HOME#$HOME#g" solaar/rules.yaml.template > "$HOME/.config/solaar/rules.yaml"
   echo "    создан ~/.config/solaar/rules.yaml"
 fi
-echo "    не забудьте включить перехват: в Solaar у клавиатуры"
-echo "    «Поведение клавиш/кнопок» → Dictation → Перенаправлено"
+echo "    не забудьте включить перехват: в Solaar у клавиатуры,"
+echo "    «Поведение клавиш/кнопок», переключите в «Перенаправлено»:"
+echo "      Dictation        — голосовой ввод"
+echo "      Mute Microphone  — выключение микрофона (необязательно)"
 
 echo "==> службы"
 systemctl --user daemon-reload
