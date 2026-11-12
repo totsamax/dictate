@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Яркость внешнего монитора через DDC/CI.
+
+    monitor-brightness up      — прибавить шаг
+    monitor-brightness down    — убавить шаг
+    monitor-brightness set 50  — выставить значение
+    monitor-brightness get     — спросить монитор
+
+Серия частых нажатий в одну сторону разгоняет шаг: перенаправленная через
+Solaar клавиша при удержании не повторяется, одно нажатие — одно событие.
+
+Зачем файл состояния. Чтение яркости у монитора занимает ~0,6 с, запись
+~0,3 с. Если спрашивать монитор на каждое нажатие, клавиша будет ощутимо
+тормозить, а при серии нажатий — захлёбываться. Поэтому желаемое значение
+живёт в файле: нажатие мгновенно сдвигает его и показывает уведомление,
+а записью занимается один процесс под блокировкой, догоняя цель. Сколько
+бы нажатий ни пришло, монитору уйдёт столько записей, сколько он успеет
+переварить.
+
+Две блокировки, а не одна. Нажатия приходят чаще, чем монитор отвечает,
+поэтому процессы живут одновременно. `state.lock` держится микросекунды
+и защищает чтение-изменение-запись цели: без него два нажатия прочитают
+одно и то же значение и одно из них потеряется. `apply.lock` держится всю
+запись в монитор, и его ждут, а не пропускают: иначе бывает так, что
+писатель в последний раз прочитал цель, в этот момент пришло новое
+нажатие — и новичок, застав блокировку занятой, ушёл, а писатель, уже
+прочитавший старую цель, вышел следом. Значение терялось. Поэтому ждём
+своей очереди и сверяемся с тем, что реально отправлено в монитор
+(файл `applied`).
+"""
+import contextlib
+import fcntl
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+STEP = int(os.environ.get("BRIGHTNESS_STEP", "5"))
+MAX_STEP = int(os.environ.get("BRIGHTNESS_MAX_STEP", "15"))
+ACCEL_SEC = float(os.environ.get("BRIGHTNESS_ACCEL_SEC", "0.4"))
+RESYNC_SEC = float(os.environ.get("BRIGHTNESS_RESYNC_SEC", "60"))
+VCP = "10"  # Brightness
+
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "monitor-brightness"
+TARGET = RUNTIME / "target"
+ACCEL = RUNTIME / "accel"
+BUS = RUNTIME / "bus"
+APPLIED = RUNTIME / "applied"
+STATE_LOCK = RUNTIME / "state.lock"
+APPLY_LOCK = RUNTIME / "apply.lock"
+NOTIFY_ID = RUNTIME / "notify-id"
+
+
+@contextlib.contextmanager
+def flock(path, blocking=True):
+    """Отдаёт True, если блокировка взята."""
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+_bus = None
+
+
+def bus():
+    """Номер шины I2C монитора. Определяется один раз: detect медленный."""
+    global _bus
+    if _bus is not None:
+        return _bus
+    with contextlib.suppress(OSError):
+        cached = BUS.read_text().strip()
+        if cached:
+            _bus = cached
+            return _bus
+    out = subprocess.run(["ddcutil", "detect", "--brief"], capture_output=True,
+                         text=True, timeout=90).stdout
+    found = re.search(r"^\s*I2C bus:\s*/dev/i2c-(\d+)", out, re.M)
+    if not found:
+        raise RuntimeError("ddcutil detect не нашёл монитор с DDC/CI")
+    _bus = found.group(1)
+    with contextlib.suppress(OSError):
+        BUS.write_text(_bus)
+    return _bus
+
+
+def ddcutil(*args, timeout=20):
+    """ddcutil сыплет трассировкой, поэтому разбираем только stdout."""
+    cmd = ["ddcutil", "--bus", bus()] + list(args)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"ddcutil {' '.join(args)}: код {r.returncode}\n{r.stderr.strip()}")
+    return r.stdout
+
+
+def read_monitor():
+    out = ddcutil("getvcp", VCP, "--brief")
+    m = re.search(rf"VCP\s+{VCP}\s+C\s+(\d+)\s+(\d+)", out)
+    if not m:
+        raise RuntimeError(f"не разобрал ответ монитора: {out.strip()!r}")
+    return int(m.group(1)), int(m.group(2))
+
+
+def write_atomic(path, text):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def current_target():
+    """Цель из файла; если его нет или он залежался — спрашиваем монитор."""
+    try:
+        if time.time() - TARGET.stat().st_mtime < RESYNC_SEC:
+            return int(TARGET.read_text().strip())
+    except (OSError, ValueError):
+        pass
+    value = read_monitor()[0]
+    write_atomic(APPLIED, str(value))
+    return value
+
+
+def next_step(direction):
+    """Шаг растёт, если жмут часто."""
+    step = STEP
+    try:
+        last_dir, last_at, last_step = ACCEL.read_text().split()
+        if last_dir == direction and time.time() - float(last_at) < ACCEL_SEC:
+            step = min(int(last_step) + STEP, MAX_STEP)
+    except (OSError, ValueError):
+        pass
+    write_atomic(ACCEL, f"{direction} {time.time():.3f} {step}")
+    return step
+
+
+def notify(value):
+    cmd = ["notify-send", "-a", "Яркость", "-u", "low", "-e", "-p",
+           "-i", "display-brightness-symbolic"]
+    with contextlib.suppress(OSError):
+        prev = NOTIFY_ID.read_text().strip()
+        if prev.isdigit():
+            cmd += ["-r", prev]
+    cmd += ["Яркость монитора", f"{value}%"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout.strip()
+        if out.isdigit():
+            write_atomic(NOTIFY_ID, out)
+    except Exception:
+        pass
+
+
+def apply_until_settled():
+    """Ждём очереди и догоняем цель, если её ещё не отправили в монитор."""
+    with flock(APPLY_LOCK) as mine:
+        assert mine
+        try:
+            written = int(APPLIED.read_text().strip())
+        except (OSError, ValueError):
+            written = None
+        while True:
+            try:
+                want = int(TARGET.read_text().strip())
+            except (OSError, ValueError):
+                return
+            if want == written:
+                return
+            ddcutil("setvcp", VCP, str(want))
+            written = want
+            write_atomic(APPLIED, str(written))
+
+
+def main():
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    arg = sys.argv[1] if len(sys.argv) > 1 else "get"
+
+    if arg == "get":
+        value, maximum = read_monitor()
+        print(f"{value}/{maximum}")
+        return 0
+
+    if arg not in ("up", "down", "set"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+
+    # Чтение-изменение-запись цели — под блокировкой, иначе одновременные
+    # нажатия прочитают одно значение и шаг потеряется.
+    with flock(STATE_LOCK) as mine:
+        assert mine
+        if arg == "set":
+            want = int(sys.argv[2])
+            with contextlib.suppress(OSError):
+                APPLIED.unlink()
+        else:
+            step = next_step(arg)
+            want = current_target() + (step if arg == "up" else -step)
+        want = max(0, min(100, want))
+        write_atomic(TARGET, str(want))
+
+    notify(want)
+    apply_until_settled()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"яркость: {exc}", file=sys.stderr)
+        subprocess.run(["notify-send", "-a", "Яркость", "-u", "critical", "-e",
+                        "Яркость монитора", str(exc)], check=False)
+        sys.exit(1)

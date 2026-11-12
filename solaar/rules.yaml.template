@@ -11,4 +11,10 @@
 ---
 - Key: [Screen Capture, pressed]
 - KeyPress: [Print, click]
+---
+- Key: [Brightness Down, pressed]
+- Execute: [$HOME/.local/bin/monitor-brightness, down]
+---
+- Key: [Brightness Up, pressed]
+- Execute: [$HOME/.local/bin/monitor-brightness, up]
 ...

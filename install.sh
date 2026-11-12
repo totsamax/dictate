@@ -14,10 +14,17 @@ for c in pw-record pw-play wl-copy wl-paste notify-send python3; do
 done
 python3 -c "import evdev" 2>/dev/null || { echo "нет python3-evdev"; exit 1; }
 [ -w /dev/uinput ] || echo "ВНИМАНИЕ: /dev/uinput недоступен на запись — вставка не сработает"
+if ! command -v ddcutil >/dev/null; then
+  echo "    ddcutil не установлен — клавиши яркости работать не будут (остальное будет)"
+elif ! ddcutil detect --brief 2>/dev/null | grep -q "I2C bus:"; then
+  echo "    ddcutil не видит монитора с DDC/CI — клавиши яркости работать не будут."
+  echo "    Проверьте права на /dev/i2c-* и включите DDC/CI в меню монитора."
+fi
 
 echo "==> копирую файлы"
 mkdir -p "$SHARE/sounds" "$ICONS" "$UNITS" "$HOME/.local/bin" "$HOME/.config/dictate"
 install -m 755 bin/dictate            "$HOME/.local/bin/dictate"
+install -m 755 bin/monitor-brightness "$HOME/.local/bin/monitor-brightness"
 install -m 644 share/daemon.py        "$SHARE/daemon.py"
 install -m 644 share/tray.py          "$SHARE/tray.py"
 install -m 755 share/run-daemon.sh    "$SHARE/run-daemon.sh"
@@ -54,6 +61,7 @@ echo "    «Поведение клавиш/кнопок», переключит
 echo "      Dictation        — голосовой ввод"
 echo "      Mute Microphone  — выключение микрофона (необязательно)"
 echo "      Screen Capture   — снимок экрана (необязательно)"
+echo "      Brightness Down/Up — яркость монитора (необязательно)"
 
 # Клавиша снимка шлёт Print, а оверлей GNOME открывается по Print только
 # если эта привязка на месте. По умолчанию она там есть, но её легко потерять.
