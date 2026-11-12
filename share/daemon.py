@@ -150,6 +150,8 @@ def set_state(value):
 
 
 _notify_id = None
+_notify_at = 0.0
+NOTIFY_REUSE_SEC = 4.0
 
 
 def notify(text, urgency="normal"):
@@ -161,11 +163,15 @@ def notify(text, urgency="normal"):
     для этого мало: она заменяет только всплывающую плашку.
 
     -r переиспользует номер предыдущего уведомления, чтобы плашка
-    обновлялась на месте, а не выстраивалась стопкой.
+    обновлялась на месте, а не выстраивалась стопкой. Но номер годится
+    только пока плашка жива: если подсунуть GNOME номер давно погасшего
+    уведомления, он обновит то, чего нет, и не покажет ничего. Поэтому
+    переиспользуем номер лишь несколько секунд — ровно чтобы сменяли
+    друг друга «Слушаю» и «Распознаю».
     """
-    global _notify_id
+    global _notify_id, _notify_at
     cmd = ["notify-send", "-a", "Диктовка", "-u", urgency, "-e", "-p"]
-    if _notify_id:
+    if _notify_id and time.monotonic() - _notify_at < NOTIFY_REUSE_SEC:
         cmd += ["-r", str(_notify_id)]
     cmd += ["Диктовка", text]
     try:
@@ -173,6 +179,7 @@ def notify(text, urgency="normal"):
         out = r.stdout.strip()
         if out.isdigit():
             _notify_id = int(out)
+            _notify_at = time.monotonic()
     except Exception:
         pass
 

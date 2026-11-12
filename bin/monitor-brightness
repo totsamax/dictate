@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 """Яркость внешнего монитора через DDC/CI.
 
-    monitor-brightness up      — прибавить шаг
-    monitor-brightness down    — убавить шаг
-    monitor-brightness set 50  — выставить значение
-    monitor-brightness get     — спросить монитор
-
-Серия частых нажатий в одну сторону разгоняет шаг: перенаправленная через
-Solaar клавиша при удержании не повторяется, одно нажатие — одно событие.
+    monitor-brightness up          — шаг вверх
+    monitor-brightness down        — шаг вниз
+    monitor-brightness hold up     — шаг, затем автоповтор, пока держат
+    monitor-brightness release     — отпустили клавишу, остановить автоповтор
+    monitor-brightness set 50      — выставить значение
+    monitor-brightness get         — спросить монитор
 
 Зачем файл состояния. Чтение яркости у монитора занимает ~0,6 с, запись
-~0,3 с. Если спрашивать монитор на каждое нажатие, клавиша будет ощутимо
-тормозить, а при серии нажатий — захлёбываться. Поэтому желаемое значение
-живёт в файле: нажатие мгновенно сдвигает его и показывает уведомление,
-а записью занимается один процесс под блокировкой, догоняя цель. Сколько
-бы нажатий ни пришло, монитору уйдёт столько записей, сколько он успеет
+~0,3 с. Если спрашивать монитор на каждый шаг, клавиша будет ощутимо
+тормозить, а при удержании — захлёбываться. Поэтому желаемое значение
+живёт в файле: шаг мгновенно сдвигает его и показывает уведомление,
+а записью занимается отдельный исполнитель, догоняя цель. Сколько бы
+шагов ни пришло, монитору уйдёт столько записей, сколько он успеет
 переварить.
 
-Две блокировки, а не одна. Нажатия приходят чаще, чем монитор отвечает,
-поэтому процессы живут одновременно. `state.lock` держится микросекунды
-и защищает чтение-изменение-запись цели: без него два нажатия прочитают
-одно и то же значение и одно из них потеряется. `apply.lock` держится всю
-запись в монитор, и его ждут, а не пропускают: иначе бывает так, что
-писатель в последний раз прочитал цель, в этот момент пришло новое
-нажатие — и новичок, застав блокировку занятой, ушёл, а писатель, уже
-прочитавший старую цель, вышел следом. Значение терялось. Поэтому ждём
-своей очереди и сверяемся с тем, что реально отправлено в монитор
+Две блокировки, а не одна. Шаги приходят чаще, чем монитор отвечает,
+поэтому работа идёт одновременно. `state.lock` держится микросекунды
+и защищает чтение-изменение-запись цели: без него два шага прочитают
+одно и то же значение и один из них потеряется. `apply.lock` держится
+всю запись в монитор, и его ждут, а не пропускают: иначе бывает так, что
+исполнитель в последний раз прочитал цель, в этот момент пришёл новый
+шаг — и новичок, застав блокировку занятой, ушёл, а исполнитель, уже
+прочитавший старую цель, вышел следом. Значение терялось молча.
+Поэтому очередь ждут и сверяются с тем, что реально отправлено в монитор
 (файл `applied`).
+
+Автоповтор. Перенаправленная через Solaar клавиша сама не повторяется:
+нажатие и отпускание — два отдельных события, между ними тишина. Поэтому
+повтор делаем сами: `hold` ставит отметку и крутит шаги, пока отметка
+на месте, `release` её убирает. Если событие отпускания потеряется,
+цикл всё равно остановится — по `BRIGHTNESS_HOLD_MAX_SEC`.
 """
 import contextlib
 import fcntl
@@ -34,22 +39,27 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 STEP = int(os.environ.get("BRIGHTNESS_STEP", "5"))
-MAX_STEP = int(os.environ.get("BRIGHTNESS_MAX_STEP", "15"))
-ACCEL_SEC = float(os.environ.get("BRIGHTNESS_ACCEL_SEC", "0.4"))
 RESYNC_SEC = float(os.environ.get("BRIGHTNESS_RESYNC_SEC", "60"))
+HOLD_DELAY_SEC = float(os.environ.get("BRIGHTNESS_HOLD_DELAY_SEC", "0.35"))
+HOLD_EVERY_SEC = float(os.environ.get("BRIGHTNESS_HOLD_EVERY_SEC", "0.07"))
+HOLD_MAX_SEC = float(os.environ.get("BRIGHTNESS_HOLD_MAX_SEC", "8"))
+BAR_CELLS = int(os.environ.get("BRIGHTNESS_BAR_CELLS", "20"))
+NOTIFY_REUSE_SEC = float(os.environ.get("BRIGHTNESS_NOTIFY_REUSE_SEC", "4"))
 VCP = "10"  # Brightness
 
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "monitor-brightness"
 TARGET = RUNTIME / "target"
-ACCEL = RUNTIME / "accel"
-BUS = RUNTIME / "bus"
 APPLIED = RUNTIME / "applied"
+HOLD = RUNTIME / "hold"
+BUS = RUNTIME / "bus"
 STATE_LOCK = RUNTIME / "state.lock"
 APPLY_LOCK = RUNTIME / "apply.lock"
+HOLD_LOCK = RUNTIME / "hold.lock"
 NOTIFY_ID = RUNTIME / "notify-id"
 
 
@@ -58,8 +68,9 @@ def flock(path, blocking=True):
     """Отдаёт True, если блокировка взята."""
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
+        mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, mode)
         except OSError:
             yield False
             return
@@ -130,31 +141,31 @@ def current_target():
     return value
 
 
-def next_step(direction):
-    """Шаг растёт, если жмут часто."""
-    step = STEP
-    try:
-        last_dir, last_at, last_step = ACCEL.read_text().split()
-        if last_dir == direction and time.time() - float(last_at) < ACCEL_SEC:
-            step = min(int(last_step) + STEP, MAX_STEP)
-    except (OSError, ValueError):
-        pass
-    write_atomic(ACCEL, f"{direction} {time.time():.3f} {step}")
-    return step
+def bar(value):
+    """Полоска из блоков: уведомление GNOME не умеет рисовать прогресс сам."""
+    filled = round(value * BAR_CELLS / 100)
+    return "█" * filled + "░" * (BAR_CELLS - filled)
 
 
 def notify(value):
-    cmd = ["notify-send", "-a", "Яркость", "-u", "low", "-e", "-p",
+    # Срочность именно normal: при low GNOME вообще не показывает плашку —
+    # уведомление молча уходит в никуда, а с ключом -e ещё и мимо истории.
+    # Подсказку int:value GNOME игнорирует, поэтому полоску рисуем сами.
+    cmd = ["notify-send", "-a", "Яркость", "-u", "normal", "-e", "-p",
            "-i", "display-brightness-symbolic"]
-    with contextlib.suppress(OSError):
-        prev = NOTIFY_ID.read_text().strip()
-        if prev.isdigit():
+    # -r заменяет плашку на месте, чтобы при удержании они не копились.
+    # Но номер годится только пока плашка жива: если подсунуть GNOME номер
+    # давно погасшего уведомления, он обновит то, чего нет, и не покажет
+    # ничего. Поэтому переиспользуем номер лишь несколько секунд.
+    with contextlib.suppress(OSError, ValueError):
+        prev, at = NOTIFY_ID.read_text().split()
+        if prev.isdigit() and time.time() - float(at) < NOTIFY_REUSE_SEC:
             cmd += ["-r", prev]
-    cmd += ["Яркость монитора", f"{value}%"]
+    cmd += [f"Яркость монитора   {value}%", bar(value)]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout.strip()
         if out.isdigit():
-            write_atomic(NOTIFY_ID, out)
+            write_atomic(NOTIFY_ID, f"{out} {time.time():.3f}")
     except Exception:
         pass
 
@@ -179,6 +190,61 @@ def apply_until_settled():
             write_atomic(APPLIED, str(written))
 
 
+def bump(direction):
+    """Сдвигает цель на шаг и показывает её. В монитор не пишет."""
+    with flock(STATE_LOCK) as mine:
+        assert mine
+        delta = STEP if direction == "up" else -STEP
+        want = max(0, min(100, current_target() + delta))
+        write_atomic(TARGET, str(want))
+    notify(want)
+    return want
+
+
+def holding(direction):
+    try:
+        return HOLD.read_text().strip() == direction
+    except OSError:
+        return False
+
+
+def hold(direction):
+    """Шаг сразу, дальше автоповтор, пока отметка удержания на месте."""
+    write_atomic(HOLD, direction)
+    with flock(HOLD_LOCK, blocking=False) as mine:
+        if not mine:
+            return  # повторитель уже крутится, ему и достанется отметка
+        stop = threading.Event()
+
+        def worker():
+            # Пишет в монитор, пока идут шаги: цикл шагов его не ждёт,
+            # иначе период упёрся бы в 0,3 с на запись.
+            while not stop.is_set():
+                apply_until_settled()
+                stop.wait(0.02)
+
+        applier = threading.Thread(target=worker, daemon=True)
+        applier.start()
+        try:
+            value = bump(direction)
+            deadline = time.monotonic() + HOLD_MAX_SEC
+            time.sleep(HOLD_DELAY_SEC)
+            while holding(direction) and time.monotonic() < deadline:
+                if value in (0, 100):
+                    break  # упёрлись в край, дальше повторять нечего
+                value = bump(direction)
+                time.sleep(HOLD_EVERY_SEC)
+        finally:
+            stop.set()
+            applier.join(timeout=HOLD_MAX_SEC)
+            apply_until_settled()
+
+
+def release():
+    with contextlib.suppress(OSError):
+        HOLD.unlink()
+
+
 def main():
     RUNTIME.mkdir(parents=True, exist_ok=True)
     arg = sys.argv[1] if len(sys.argv) > 1 else "get"
@@ -188,27 +254,36 @@ def main():
         print(f"{value}/{maximum}")
         return 0
 
-    if arg not in ("up", "down", "set"):
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
+    if arg == "release":
+        release()
+        return 0
 
-    # Чтение-изменение-запись цели — под блокировкой, иначе одновременные
-    # нажатия прочитают одно значение и шаг потеряется.
-    with flock(STATE_LOCK) as mine:
-        assert mine
-        if arg == "set":
-            want = int(sys.argv[2])
+    if arg == "hold":
+        direction = sys.argv[2]
+        if direction not in ("up", "down"):
+            print(__doc__.strip(), file=sys.stderr)
+            return 2
+        hold(direction)
+        return 0
+
+    if arg in ("up", "down"):
+        bump(arg)
+        apply_until_settled()
+        return 0
+
+    if arg == "set":
+        with flock(STATE_LOCK) as mine:
+            assert mine
+            want = max(0, min(100, int(sys.argv[2])))
             with contextlib.suppress(OSError):
                 APPLIED.unlink()
-        else:
-            step = next_step(arg)
-            want = current_target() + (step if arg == "up" else -step)
-        want = max(0, min(100, want))
-        write_atomic(TARGET, str(want))
+            write_atomic(TARGET, str(want))
+        notify(want)
+        apply_until_settled()
+        return 0
 
-    notify(want)
-    apply_until_settled()
-    return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

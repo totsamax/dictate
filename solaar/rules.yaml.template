@@ -13,8 +13,14 @@
 - KeyPress: [Print, click]
 ---
 - Key: [Brightness Down, pressed]
-- Execute: [$HOME/.local/bin/monitor-brightness, down]
+- Execute: [$HOME/.local/bin/monitor-brightness, hold, down]
+---
+- Key: [Brightness Down, released]
+- Execute: [$HOME/.local/bin/monitor-brightness, release]
 ---
 - Key: [Brightness Up, pressed]
-- Execute: [$HOME/.local/bin/monitor-brightness, up]
+- Execute: [$HOME/.local/bin/monitor-brightness, hold, up]
+---
+- Key: [Brightness Up, released]
+- Execute: [$HOME/.local/bin/monitor-brightness, release]
 ...
