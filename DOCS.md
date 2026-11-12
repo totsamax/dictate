@@ -1,10 +1,13 @@
 # Спецклавиши MX Keys for Business под Linux
 
-Две клавиши, которые без Solaar не отправляют в систему ничего:
+Три клавиши, которые без Solaar под Linux бесполезны:
 
 - **F5, Dictation** — голосовой ввод. Нажал и держишь — говоришь.
   Отпустил — текст вставился туда, где курсор. Ей посвящён почти весь документ.
-- **F7, Mute Microphone** — выключение микрофона. Одно правило, [в конце](#клавиша-mute-microphone-f7).
+- **F7, Mute Microphone** — выключение микрофона. Одно правило,
+  [в конце](#клавиша-mute-microphone-f7).
+- **Screen Capture** — снимок экрана. Тоже одно правило,
+  [в конце](#клавиша-screen-capture).
 
 ## Как устроена диктовка
 
@@ -18,7 +21,7 @@
 | `~/.local/share/dictate/run-daemon.sh` | обёртка: подкладывает CUDA-библиотеки из venv |
 | `~/.local/bin/dictate` | клиент, его запускает Solaar: `start`, `stop`, `toggle` |
 | `~/.config/systemd/user/dictate.service` | автозапуск при входе в систему |
-| `~/.config/solaar/rules.yaml` | правила Solaar: нажатие → start, отпускание → stop, плюс правило для F7 |
+| `~/.config/solaar/rules.yaml` | правила Solaar: нажатие → start, отпускание → stop, плюс правила для F7 и снимка экрана |
 | `~/.local/share/dictate/venv` | окружение с faster-whisper (2,6 ГБ) |
 | `~/.local/share/dictate/tray.py` | значок в трее: состояние и выбор микрофона |
 | `~/.local/share/icons/hicolor/scalable/status/dictate-*.svg` | четыре состояния значка |
@@ -29,8 +32,8 @@
 | `~/.local/share/dictate/sounds/*.wav` | три сигнала: старт, готово, ошибка |
 
 Перехват клавиш включён в `~/.config/solaar/config.yaml`: у MX Keys в `divert-keys`
-ключи `259` (Dictation) и `284` (Mute Microphone) стоят в `1`. Если сбросятся в `0` —
-клавиши снова станут обычными, то есть молчащими.
+ключи `259` (Dictation), `284` (Mute Microphone) и `266` (Screen Capture) стоят в `1`.
+Если сбросятся в `0` — клавиши вернутся к заводскому поведению, то есть к бесполезному.
 
 Включать перехват удобнее из окна Solaar. Через командную строку на русской локали
 не выйдет: значения выбора локализованы («Перенаправлено»), а Solaar 1.1.19 падает
@@ -214,7 +217,7 @@ journalctl --user -u dictate -f
 ```bash
 dictate start; sleep 3; dictate stop   # в обход клавиши
 pgrep -af 'solaar --window=hide'       # жив ли Solaar
-grep divert-keys ~/.config/solaar/config.yaml | head -1   # ищите "259: 1" и "284: 1"
+grep divert-keys ~/.config/solaar/config.yaml | head -1   # ищите "259: 1", "284: 1", "266: 1"
 wpctl get-volume @DEFAULT_AUDIO_SOURCE@                   # состояние микрофона
 ```
 
@@ -269,3 +272,59 @@ gnome-settings-daemon — со своей плашкой на экране и з
 wpctl get-volume @DEFAULT_AUDIO_SOURCE@   # до
 wpctl set-mute  @DEFAULT_AUDIO_SOURCE@ 0  # вернуть как было
 ```
+
+## Клавиша Screen Capture
+
+На клавиатуре у неё глиф снимка экрана, в Logi Options+ действие называется
+`Snipping Tool`. В отличие от двух предыдущих, она не молчит: прошивка шлёт
+виндовое Win+Shift+S. В GNOME это сочетание ни к чему не привязано, поэтому
+результата нет.
+
+```yaml
+- Key: [Screen Capture, pressed]
+- KeyPress: [Print, click]
+```
+
+`Print` разрешается в X-keycode 107, то есть evdev `KEY_SYSRQ` (99), а GNOME
+по умолчанию открывает по нему оверлей снимка — тот самый, с выбором области,
+окна или всего экрана.
+
+**Почему `Print`, а не сочетание с буквой.** Если у вас оверлей привязан
+к чему-то вроде `<Shift><Control><Alt>i`, велик соблазн эмулировать прямо его.
+Не надо: Solaar переводит имя клавиши в keycode через текущую раскладку, и `i`
+на русской раскладке не найдётся — `keysym_to_keycode` вернёт `None`, Solaar
+напишет в лог `key symbol not currently available` и ничего не сделает.
+Клавиша работала бы только на латинице. `Print` от раскладки не зависит.
+
+**Проверьте привязку.** Правило работает только если оверлей висит на `Print`.
+Так в GNOME по умолчанию, но привязку можно потерять — например, её забирают
+себе программы удалённого доступа:
+
+```bash
+gsettings get org.gnome.shell.keybindings show-screenshot-ui   # ждём 'Print' в списке
+```
+
+Если `Print` там нет — добавьте, не выбрасывая того, что есть:
+
+```bash
+gsettings set org.gnome.shell.keybindings show-screenshot-ui \
+  "$(gsettings get org.gnome.shell.keybindings show-screenshot-ui | sed "s/]$/, 'Print']/")"
+```
+
+Откатить всё — `gsettings reset org.gnome.shell.keybindings show-screenshot-ui`.
+
+**Тупик, в который не стоит ходить.** У `org.gnome.Shell.Screenshot` есть
+метод `InteractiveScreenshot`, который открыл бы оверлей без эмуляции клавиш
+и без зависимости от привязок. Он закрыт для обычных программ:
+`GDBus.Error:org.freedesktop.DBus.Error.AccessDenied: InteractiveScreenshot
+is not allowed`. Это интерфейс для портала, не для нас.
+
+**Проверить, не трогая клавиатуру:**
+
+```bash
+gsettings get org.gnome.shell.keybindings screenshot   # обычно '<Shift>Print'
+```
+
+Это сочетание сохраняет снимок всего экрана в файл, без оверлея — удобно,
+чтобы убедиться, что GNOME вообще получает `Print` от синтетического
+устройства ввода: если файл в папке снимков появился, цепочка работает.

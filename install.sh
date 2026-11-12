@@ -53,6 +53,18 @@ echo "    не забудьте включить перехват: в Solaar у 
 echo "    «Поведение клавиш/кнопок», переключите в «Перенаправлено»:"
 echo "      Dictation        — голосовой ввод"
 echo "      Mute Microphone  — выключение микрофона (необязательно)"
+echo "      Screen Capture   — снимок экрана (необязательно)"
+
+# Клавиша снимка шлёт Print, а оверлей GNOME открывается по Print только
+# если эта привязка на месте. По умолчанию она там есть, но её легко потерять.
+if command -v gsettings >/dev/null &&
+   ! gsettings get org.gnome.shell.keybindings show-screenshot-ui 2>/dev/null | grep -q "'Print'"; then
+  echo
+  echo "    ВНИМАНИЕ: оверлей снимка экрана не привязан к Print, клавиша не сработает."
+  echo "    Добавить, ничего не потеряв:"
+  echo "      gsettings set org.gnome.shell.keybindings show-screenshot-ui \\"
+  echo "        \"\$(gsettings get org.gnome.shell.keybindings show-screenshot-ui | sed \"s/]$/, 'Print']/\")\""
+fi
 
 echo "==> службы"
 systemctl --user daemon-reload

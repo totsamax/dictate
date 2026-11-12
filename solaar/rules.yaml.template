@@ -8,4 +8,7 @@
 ---
 - Key: [Mute Microphone, pressed]
 - KeyPress: [XF86_AudioMicMute, click]
+---
+- Key: [Screen Capture, pressed]
+- KeyPress: [Print, click]
 ...
