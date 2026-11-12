@@ -285,7 +285,7 @@ class Tray:
         shown = DEFAULT_LABEL if name == "" else widget.get_label().strip()
         subprocess.run(
             ["notify-send", "-a", "Диктовка",
-             "-h", "string:x-canonical-private-synchronous:dictate",
+             "-e", "-h", "string:x-canonical-private-synchronous:dictate",
              "Диктовка", f"Микрофон: {shown}"], check=False)
 
     def on_preroll(self, widget):
@@ -296,7 +296,7 @@ class Tray:
         self.preroll = value
         subprocess.run(
             ["notify-send", "-a", "Диктовка",
-             "-h", "string:x-canonical-private-synchronous:dictate", "Диктовка",
+             "-e", "-h", "string:x-canonical-private-synchronous:dictate", "Диктовка",
              "Начало фразы сохраняется. Микрофон остаётся открытым."
              if value else
              "Микрофон открывается только на время записи."], check=False)
@@ -316,7 +316,7 @@ class Tray:
         self.autostart = autostart_on()
         subprocess.run(
             ["notify-send", "-a", "Диктовка",
-             "-h", "string:x-canonical-private-synchronous:dictate", "Диктовка",
+             "-e", "-h", "string:x-canonical-private-synchronous:dictate", "Диктовка",
              "Будет запускаться при входе в систему" if self.autostart
              else "При входе появится только значок, служба — вручную"],
             check=False)
@@ -331,7 +331,7 @@ class Tray:
                  "restart": "Служба перезапущена"}
         subprocess.run(
             ["notify-send", "-a", "Диктовка",
-             "-h", "string:x-canonical-private-synchronous:dictate",
+             "-e", "-h", "string:x-canonical-private-synchronous:dictate",
              "Диктовка", words.get(verb, verb)], check=False)
 
     # --- обновление ---------------------------------------------------

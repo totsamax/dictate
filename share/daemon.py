@@ -149,14 +149,32 @@ def set_state(value):
         pass
 
 
+_notify_id = None
+
+
 def notify(text, urgency="normal"):
-    """Уведомление, заменяющее предыдущее, чтобы не копить стопку."""
-    subprocess.run(
-        ["notify-send", "-a", "Диктовка", "-u", urgency,
-         "-h", "string:x-canonical-private-synchronous:dictate",
-         "Диктовка", text],
-        check=False,
-    )
+    """Показать плашку, не оставляя следа в истории уведомлений.
+
+    Флаг -e (transient) — главное здесь: без него GNOME складывает каждое
+    уведомление в список, и после дня работы экран блокировки оказывается
+    завален десятками «Диктовка». Подсказки x-canonical-private-synchronous
+    для этого мало: она заменяет только всплывающую плашку.
+
+    -r переиспользует номер предыдущего уведомления, чтобы плашка
+    обновлялась на месте, а не выстраивалась стопкой.
+    """
+    global _notify_id
+    cmd = ["notify-send", "-a", "Диктовка", "-u", urgency, "-e", "-p"]
+    if _notify_id:
+        cmd += ["-r", str(_notify_id)]
+    cmd += ["Диктовка", text]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+        out = r.stdout.strip()
+        if out.isdigit():
+            _notify_id = int(out)
+    except Exception:
+        pass
 
 
 def load_model():
